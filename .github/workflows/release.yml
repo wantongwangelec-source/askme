@@ -1,0 +1,58 @@
+name: Release
+
+# Pushing a tag such as v0.3.0 (or v0.3.0-beta.1 for a pre-release) builds a universal, ad-hoc
+# signed Askme.app and publishes it as a GitHub release. scripts/release.sh does the tagging.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: macos-latest
+    timeout-minutes: 40
+    steps:
+      - name: Check out
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Show toolchain
+        run: |
+          sw_vers
+          xcodebuild -version
+          swift --version
+
+      - name: Run tests
+        run: swift test
+
+      - name: Build universal app
+        run: |
+          export VERSION="${GITHUB_REF_NAME#v}"
+          export BUILD_NUMBER="$(git rev-list --count HEAD)"
+          ARCHS="arm64 x86_64" ./scripts/build-app.sh
+
+      - name: Package
+        run: ./scripts/package-release.sh "${GITHUB_REF_NAME#v}"
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ./scripts/release-notes.sh "$GITHUB_REF_NAME" > dist/release/NOTES.md
+          PRERELEASE=""
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then PRERELEASE="--prerelease"; fi
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/release/*.dmg dist/release/*.zip dist/release/SHA256SUMS.txt --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/release/*.dmg dist/release/*.zip dist/release/SHA256SUMS.txt \
+              --title "Askme $GITHUB_REF_NAME" --notes-file dist/release/NOTES.md --verify-tag $PRERELEASE
+          fi
